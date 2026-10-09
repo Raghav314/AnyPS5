@@ -218,6 +218,7 @@ struct VulkanDevice::State {
     bool samplerFilterMinmax = false;
     bool fragmentShaderPixelInterlock = false;
     bool conservativeRasterization = false;
+    VkSampleCountFlags sampleLocationCounts = 0;
     // VK_KHR_timeline_semaphore enabled: the recorder's unlocked waits are available.
     bool timelineSemaphores = false;
     bool computeWave32 = false;
@@ -850,6 +851,13 @@ VulkanDevice::VulkanDevice(const PresentationWindow* window) : state(std::make_u
         state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &properties);
         state->conservativeRasterization = conservativeProperties.primitiveOverestimationSize <= 1.0f / 256.0f && conservativeProperties.degenerateTrianglesRasterized == VK_TRUE;
         if (state->conservativeRasterization) deviceExtensions.push_back(VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
+    }
+    if (hasExtension(VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME)) {
+        VkPhysicalDeviceSampleLocationsPropertiesEXT locationProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &locationProperties};
+        state->InstanceFunction<PFN_vkGetPhysicalDeviceProperties2>("vkGetPhysicalDeviceProperties2")(selected, &properties);
+        if (locationProperties.variableSampleLocations == VK_TRUE && locationProperties.sampleLocationSubPixelBits >= 4 && locationProperties.sampleLocationCoordinateRange[0] <= 0.0f && locationProperties.sampleLocationCoordinateRange[1] >= 0.9375f) state->sampleLocationCounts = locationProperties.sampleLocationSampleCounts;
+        if (state->sampleLocationCounts != 0) deviceExtensions.push_back(VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME);
     }
     // Indirect draws with a GPU-side count (DRAW_INDIRECT_MULTI with count_indirect); a device
     // without it resolves such draws on the CPU.
@@ -2502,6 +2510,7 @@ Graphics::Context VulkanDevice::buildContext() const {
     context.depthBiasClamp = state->depthBiasClamp;
     context.samplerFilterMinmax = state->samplerFilterMinmax;
     context.conservativeRasterization = state->conservativeRasterization;
+    context.sampleLocationCounts = state->sampleLocationCounts;
     context.drawIndirectCount = state->drawIndirectCount;
     context.occlusionQueryPrecise = state->occlusionQueryPrecise;
     context.emptyBuffer = state->emptyBuffer ? state->emptyBuffer->Handle() : VK_NULL_HANDLE;

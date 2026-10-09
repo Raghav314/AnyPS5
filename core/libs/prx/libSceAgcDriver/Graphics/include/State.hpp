@@ -30,6 +30,8 @@ struct ShaderStages {
     std::optional<ShaderRecompiler::TessellationConfiguration> tessellation;
 };
 
+using SampleLocations = std::array<std::array<std::int8_t, 2>, 8>;
+
 struct ColorTarget {
     std::uint64_t address;
     VkExtent2D extent;
@@ -104,6 +106,7 @@ struct State {
     VkPipelineColorBlendAttachmentState blend;
     std::array<float, 4> blendConstants;
     std::uint32_t samples = 1;
+    std::optional<SampleLocations> sampleLocations;
 };
 
 ShaderStages DecodeShaderStages(const QueueState& queue);

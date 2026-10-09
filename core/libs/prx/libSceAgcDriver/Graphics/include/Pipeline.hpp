@@ -87,6 +87,8 @@ void ClearCachedPipelines(VkDevice device);
 // Device limit checks of the viewport, which is dynamic state and so no longer checked by Pipeline.
 void ValidateViewport(const Context& context, const VkViewport& viewport);
 void ValidateDepthBounds(const Context& context, const State& state);
+VkSampleLocationEXT HostSampleLocation(const std::array<std::int8_t, 2>& location);
+bool SampleLocationsCompatibleDepth(const Context& context, VkFormat format, std::uint32_t samples);
 
 void ValidateShaderPair(const ShaderRecompiler::RecompileResult& vertex, const ShaderRecompiler::RecompileResult& fragment);
 // Returns the color attachment locations the pixel shader writes.

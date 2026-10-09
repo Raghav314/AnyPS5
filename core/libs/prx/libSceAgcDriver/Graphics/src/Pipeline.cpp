@@ -78,6 +78,17 @@ Framebuffer::~Framebuffer() {
     if (framebuffer) context.Function<PFN_vkDestroyFramebuffer>("vkDestroyFramebuffer")(context.device, framebuffer, nullptr);
 }
 
+VkSampleLocationEXT HostSampleLocation(const std::array<std::int8_t, 2>& location) {
+    return {0.5f + static_cast<float>(location[0]) / 16.0f, 0.5f + static_cast<float>(location[1]) / 16.0f};
+}
+
+bool SampleLocationsCompatibleDepth(const Context& context, VkFormat format, std::uint32_t samples) {
+    const auto count = static_cast<VkSampleCountFlagBits>(samples);
+    if (samples <= 1 || (context.sampleLocationCounts & count) == 0) return false;
+    VkImageFormatProperties supported{};
+    return context.imageFormatProperties(context.physical, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT, &supported) == VK_SUCCESS && (supported.sampleCounts & count) != 0;
+}
+
 void ValidateDepthBounds(const Context& context, const State& state) {
     Require(!state.depthBoundsTest || context.depthRangeUnrestricted || (state.minDepthBounds >= 0.0f && state.minDepthBounds <= 1.0f && state.maxDepthBounds >= 0.0f && state.maxDepthBounds <= 1.0f), "depth bounds outside [0, 1] require VK_EXT_depth_range_unrestricted");
 }
@@ -103,6 +114,8 @@ Pipeline::Pipeline(const Context& context, const State& state, const VertexInput
     Require(!depthBias || state.depthBiasClamp == 0.0f || context.depthBiasClamp, "device does not support depth bias clamping");
     Require(!state.negativeOneToOne || context.depthClipControl, "negative-one-to-one depth clipping requires VK_EXT_depth_clip_control with depthClipControl enabled");
     Require(state.conservativeRasterization == VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT || context.conservativeRasterization, "conservative rasterization requires VK_EXT_conservative_rasterization with at most 1/256 pixel of overestimation and degenerate triangles rasterized");
+    Require(!state.sampleLocations || (context.sampleLocationCounts & static_cast<VkSampleCountFlagBits>(state.samples)) != 0, "custom sample locations require VK_EXT_sample_locations with variable locations at 1/16 pixel for the draw's sample count");
+    Require(!state.sampleLocations || !state.depth || SampleLocationsCompatibleDepth(context, state.depth->format, state.depth->samples), "custom sample locations with a depth target whose format the device cannot make compatible with them");
     if (state.rectList) Require(context.tessellationShader && context.limits.maxTessellationPatchSize >= 4, "rect-list requires tessellation with four output control points");
     if (state.stages.tessellation) {
         Require(context.tessellationShader, "device does not support tessellation shaders");
@@ -215,6 +228,14 @@ Pipeline::Pipeline(const Context& context, const State& state, const VertexInput
         if (state.conservativeRasterization != VK_CONSERVATIVE_RASTERIZATION_MODE_DISABLED_EXT) raster.pNext = &conservative;
         VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         samples.rasterizationSamples = static_cast<VkSampleCountFlagBits>(state.samples);
+        std::array<VkSampleLocationEXT, 8> locations{};
+        VkPipelineSampleLocationsStateCreateInfoEXT sampleLocations{VK_STRUCTURE_TYPE_PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT};
+        if (state.sampleLocations) {
+            for (std::uint32_t sample = 0; sample < state.samples; ++sample) locations[sample] = HostSampleLocation((*state.sampleLocations)[sample]);
+            sampleLocations.sampleLocationsEnable = VK_TRUE;
+            sampleLocations.sampleLocationsInfo = {VK_STRUCTURE_TYPE_SAMPLE_LOCATIONS_INFO_EXT, nullptr, static_cast<VkSampleCountFlagBits>(state.samples), {1, 1}, state.samples, locations.data()};
+            samples.pNext = &sampleLocations;
+        }
         VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depthStencil.depthTestEnable = state.depthTest;
         depthStencil.depthWriteEnable = state.depthWrite;
@@ -413,6 +434,13 @@ std::vector<std::byte> pipelineKey(const Context& context, const State& state, c
     for (const auto& blend : state.blends) append(key, blend);
     for (const auto value : state.blendConstants) append(key, value);
     append(key, state.samples);
+    append(key, state.sampleLocations.has_value());
+    if (state.sampleLocations) {
+        for (const auto& location : *state.sampleLocations) {
+            append(key, location[0]);
+            append(key, location[1]);
+        }
+    }
     append(key, state.colors.size());
     for (const auto& color : state.colors) append(key, color.format);
     if (state.blends.size() != state.colors.size()) {

@@ -282,7 +282,7 @@ constexpr std::array<std::array<std::int8_t, 2>, 2> StandardLocations2{{{4, 4}, 
 constexpr std::array<std::array<std::int8_t, 2>, 4> StandardLocations4{{{-2, -6}, {6, -2}, {-6, 2}, {2, 6}}};
 constexpr std::array<std::array<std::int8_t, 2>, 8> StandardLocations8{{{1, -3}, {-1, 3}, {5, 1}, {-3, -5}, {-5, 5}, {-7, -1}, {3, 7}, {7, -8}}};
 
-std::uint32_t decodeSamples(const Registers& cx) {
+std::uint32_t decodeSamples(const Registers& cx, std::optional<SampleLocations>* locations = nullptr) {
     const auto config = read(cx, 0x2f8);
     zero(cx, 0x2f8, ~(0x7u | 0x1e000u | 0x700000u), "coverage conversion or nonstandard multisampling");
     const auto log2 = config & 7u;
@@ -294,15 +294,23 @@ std::uint32_t decodeSamples(const Registers& cx) {
     Require(((config >> 20u) & 7u) == log2, "exposing fewer samples than are rasterized is unsupported");
     const auto samples = 1u << log2;
     const std::span<const std::array<std::int8_t, 2>> standard = samples == 2 ? std::span<const std::array<std::int8_t, 2>>(StandardLocations2) : samples == 4 ? std::span<const std::array<std::int8_t, 2>>(StandardLocations4) : std::span<const std::array<std::int8_t, 2>>(StandardLocations8);
+    SampleLocations decoded{};
+    bool standardLocations = true;
     for (std::uint32_t pixel = 0; pixel < 4; ++pixel) {
         for (std::uint32_t sample = 0; sample < samples; ++sample) {
             const auto word = read(cx, 0x2fe + pixel * 4u + sample / 4u);
             const auto bits = (word >> (8u * (sample % 4u))) & 0xffu;
-            const auto x = static_cast<std::int8_t>(static_cast<std::uint8_t>(bits << 4u)) >> 4;
-            const auto y = static_cast<std::int8_t>(static_cast<std::uint8_t>(bits & 0xf0u)) >> 4;
-            Require(x == standard[sample][0] && y == standard[sample][1], "nonstandard sample locations are unsupported");
+            const auto x = static_cast<std::int8_t>(static_cast<std::int8_t>(static_cast<std::uint8_t>(bits << 4u)) >> 4);
+            const auto y = static_cast<std::int8_t>(static_cast<std::int8_t>(static_cast<std::uint8_t>(bits & 0xf0u)) >> 4);
+            if (pixel == 0) {
+                decoded[sample] = {x, y};
+                standardLocations = standardLocations && x == standard[sample][0] && y == standard[sample][1];
+            } else {
+                Require(x == decoded[sample][0] && y == decoded[sample][1], "sample locations that differ between the pixels of a quad are unsupported");
+            }
         }
     }
+    if (locations != nullptr && !standardLocations) *locations = decoded;
     return samples;
 }
 
@@ -547,7 +555,7 @@ State DecodeState(const QueueState& queue) {
         }
     }
     zero(cx, 0x207, ~LayerExports, "clip distances, layer, viewport or auxiliary vertex exports");
-    result.samples = decodeSamples(cx);
+    result.samples = decodeSamples(cx, &result.sampleLocations);
     {
         const auto depthControl = read(cx, 0x200);
         if ((depthControl & 0xbu) != 0 && depthSurfaceBound(cx)) {

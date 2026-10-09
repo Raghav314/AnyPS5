@@ -1131,11 +1131,62 @@ void multisampleTests() {
     };
     auto queue = multisampled();
     auto state = DecodeState(queue);
-    Require(state.samples == 2 && state.colors.size() == 1 && state.colors[0].samples == 2 && state.colors[0].cmaskAddress == 0, "2x multisampling did not decode");
+    Require(state.samples == 2 && state.colors.size() == 1 && state.colors[0].samples == 2 && state.colors[0].cmaskAddress == 0 && !state.sampleLocations, "2x multisampling did not decode");
     const auto rejection = AgcDriver::Graphics::DrawRejection(queue, false);
     Require(rejection.empty(), "the precheck refused 2x multisampling: " + rejection);
     queue.context[0x302] = 0x44cc;
-    expectFailure([&] { DecodeState(queue); }, "nonstandard sample locations");
+    expectFailure([&] { DecodeState(queue); }, "differ between the pixels of a quad");
+    for (std::uint32_t pixel = 0; pixel < 4; ++pixel) queue.context[0x2fe + pixel * 4u] = 0x44cc;
+    state = DecodeState(queue);
+    Require(state.sampleLocations && (*state.sampleLocations)[0] == std::array<std::int8_t, 2>{-4, -4} && (*state.sampleLocations)[1] == std::array<std::int8_t, 2>{4, 4}, "2x sample locations other than the standard ones did not decode");
+    queue = multisampled();
+    queue.context[0x2f8] = 0x00200002;
+    for (std::uint32_t pixel = 0; pixel < 4; ++pixel) queue.context[0x2fe + pixel * 4u] = 0x444cc4cc;
+    queue.context[0x31d] = 0x12000;
+    state = DecodeState(queue);
+    const AgcDriver::Graphics::SampleLocations ordered{{{-4, -4}, {4, -4}, {-4, 4}, {4, 4}, {0, 0}, {0, 0}, {0, 0}, {0, 0}}};
+    Require(state.samples == 4 && state.sampleLocations == ordered, "the 4x ordered grid did not decode");
+    for (std::uint32_t pixel = 0; pixel < 4; ++pixel) queue.context[0x2fe + pixel * 4u] = 0x622ae6aeu;
+    Require(!DecodeState(queue).sampleLocations, "the standard 4x locations decoded as custom ones");
+    queue.context[0x2f8] = 0x00300003;
+    queue.context[0x31d] = 0x1b000;
+    for (std::uint32_t pixel = 0; pixel < 4; ++pixel) {
+        queue.context[0x2fe + pixel * 4u] = 0x444cc4cc;
+        queue.context[0x2ff + pixel * 4u] = 0x222ee2ee;
+    }
+    state = DecodeState(queue);
+    const AgcDriver::Graphics::SampleLocations ordered8{{{-4, -4}, {4, -4}, {-4, 4}, {4, 4}, {-2, -2}, {2, -2}, {-2, 2}, {2, 2}}};
+    Require(state.samples == 8 && state.sampleLocations == ordered8, "8x sample locations did not decode from both words of each pixel");
+
+    using AgcDriver::Graphics::HostSampleLocation;
+    const std::array<std::array<std::int8_t, 2>, 4> standard4{{{-2, -6}, {6, -2}, {-6, 2}, {2, 6}}};
+    const std::array<VkSampleLocationEXT, 4> vulkanStandard4{{{0.375f, 0.125f}, {0.875f, 0.375f}, {0.125f, 0.625f}, {0.625f, 0.875f}}};
+    for (std::size_t sample = 0; sample < standard4.size(); ++sample) {
+        const auto location = HostSampleLocation(standard4[sample]);
+        Require(location.x == vulkanStandard4[sample].x && location.y == vulkanStandard4[sample].y, "the console's standard 4x locations are not Vulkan's standard 4x locations");
+    }
+    const auto corner = HostSampleLocation({-8, 7});
+    Require(corner.x == 0.0f && corner.y == 0.9375f, "the sample location range is not 0 to 15/16 of a pixel");
+
+    using AgcDriver::Graphics::SampleLocationsCompatibleDepth;
+    static VkImageCreateFlags queriedFlags = 0;
+    static VkImageUsageFlags queriedUsage = 0;
+    AgcDriver::Graphics::Context locationContext{};
+    locationContext.imageFormatProperties = [](VkPhysicalDevice, VkFormat format, VkImageType, VkImageTiling, VkImageUsageFlags usage, VkImageCreateFlags flags, VkImageFormatProperties* properties) {
+        queriedFlags = flags;
+        queriedUsage = usage;
+        if (format != VK_FORMAT_D32_SFLOAT) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+        *properties = {};
+        properties->sampleCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
+        return VK_SUCCESS;
+    };
+    Require(!SampleLocationsCompatibleDepth(locationContext, VK_FORMAT_D32_SFLOAT, 4), "a depth target was location-compatible on a device without VK_EXT_sample_locations");
+    locationContext.sampleLocationCounts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
+    Require(SampleLocationsCompatibleDepth(locationContext, VK_FORMAT_D32_SFLOAT, 4), "a supported 4x depth format was not location-compatible");
+    Require(queriedFlags == VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT && queriedUsage == (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT), "the depth format was not queried as the multisampled depth image is created");
+    Require(!SampleLocationsCompatibleDepth(locationContext, VK_FORMAT_D32_SFLOAT, 2), "a depth format was location-compatible at a sample count the format does not support");
+    Require(!SampleLocationsCompatibleDepth(locationContext, VK_FORMAT_D24_UNORM_S8_UINT, 4), "a depth format the device refuses was location-compatible");
+    Require(!SampleLocationsCompatibleDepth(locationContext, VK_FORMAT_D32_SFLOAT, 1), "a single-sample depth target was location-compatible");
     queue = multisampled();
     queue.context[0x31d] = 0x1000;
     expectFailure([&] { DecodeState(queue); }, "fewer fragments than samples");
