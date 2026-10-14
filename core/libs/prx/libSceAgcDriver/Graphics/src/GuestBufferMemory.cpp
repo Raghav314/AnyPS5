@@ -11,8 +11,8 @@
 #include "prx/libc/include/CpuTopology.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
-#ifdef _WIN32
 #include "prx/libc/include/HostThreadLocal.hpp"
+#ifdef _WIN32
 #include <windows.h>
 #else
 #include <fcntl.h>
