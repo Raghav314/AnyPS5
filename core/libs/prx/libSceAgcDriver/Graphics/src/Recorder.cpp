@@ -2903,6 +2903,8 @@ bool Recorder::noteWrite(std::uint64_t address, std::size_t bytes, bool ownLabel
     ensureOpen();
     const auto end = address + bytes;
     open->writes.emplace_back(address, end);
+    open->writeLow = std::min(open->writeLow, address);
+    open->writeHigh = std::max(open->writeHigh, end);
     open->writeNotes.push_back(++writeNoteCount);
     if (published != nullptr && !SnapshotCovers(published.get(), address, end)) published = nullptr;
     open->writeValues.push_back(static_cast<std::int16_t>(value));
@@ -2932,6 +2934,8 @@ void Recorder::noteWriteOn(Batch& batch, std::uint64_t address, std::size_t byte
     // when the batch finishes, and the hook must sync for a CPU read until then). The generation
     // moves as well, so a poller re-consults the label table for a completion label.
     batch.writes.emplace_back(address, address + bytes);
+    batch.writeLow = std::min(batch.writeLow, address);
+    batch.writeHigh = std::max(batch.writeHigh, address + bytes);
     batch.writeNotes.push_back(++writeNoteCount);
     if (published != nullptr && !SnapshotCovers(published.get(), address, address + bytes)) published = nullptr;
     batch.writeValues.push_back(-1);
@@ -3039,6 +3043,7 @@ void Recorder::publishPendingWrites(std::span<const std::pair<std::uint64_t, std
 }
 
 bool Recorder::overlaps(const Batch& batch, std::uint64_t address, std::uint64_t end) {
+    if (!(address < batch.writeHigh && batch.writeLow < end)) return false;
     for (const auto& [begin, finish] : batch.writes) {
         if (address < finish && begin < end) return true;
     }
@@ -3093,9 +3098,11 @@ std::uint64_t Recorder::LastWriteNote(std::uint64_t address, std::size_t bytes) 
 
 std::uint64_t Recorder::NewestWriteNote(std::uint64_t address, std::size_t bytes) const {
     if (bytes == 0) return 0;
+    if (published != nullptr && !SnapshotOverlaps(published.get(), address, bytes)) return 0;
     const auto end = address + bytes;
     std::uint64_t newest = 0;
     const auto scan = [&](const Batch& batch) {
+        if (!(address < batch.writeHigh && batch.writeLow < end)) return;
         for (std::size_t i = 0; i < batch.writes.size(); ++i) {
             if (address < batch.writes[i].second && batch.writes[i].first < end) newest = std::max(newest, batch.writeNotes[i]);
         }
@@ -3108,8 +3115,10 @@ std::uint64_t Recorder::NewestWriteNote(std::uint64_t address, std::size_t bytes
 std::vector<Recorder::PendingWrite> Recorder::PendingWritesOver(std::uint64_t address, std::size_t bytes) const {
     std::vector<PendingWrite> found;
     if (bytes == 0) return found;
+    if (published != nullptr && !SnapshotOverlaps(published.get(), address, bytes)) return found;
     const auto end = address + bytes;
     const auto scan = [&](const Batch& batch) {
+        if (!(address < batch.writeHigh && batch.writeLow < end)) return;
         for (std::size_t i = 0; i < batch.writes.size(); ++i) {
             if (address < batch.writes[i].second && batch.writes[i].first < end) found.push_back({batch.writes[i].first, batch.writes[i].second, batch.writeNotes[i], batch.writeValues[i], batch.writeWords[i]});
         }

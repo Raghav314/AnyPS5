@@ -554,6 +554,8 @@ private:
         std::vector<std::uint64_t> writeNotes;
         std::vector<std::int16_t> writeValues;
         std::vector<std::int64_t> writeWords;
+        std::uint64_t writeLow = ~std::uint64_t{0};
+        std::uint64_t writeHigh = 0;
         // In-place reads (see NotePendingRead), dying with the batch: a finished batch's reads are done.
         struct Read {
             std::uint64_t begin;
